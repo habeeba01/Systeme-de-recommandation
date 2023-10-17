@@ -1,0 +1,11 @@
+{% extends 'layout.html' %}
+{% block content %}
+    <h1>Offres Recommandées</h1>
+    <ul>
+        {% for recommendation in recommendations %}
+            <li>
+                <a href="{{ recommendation.lienOffre }}">{{ recommendation.lienOffre }}</a>
+            </li>
+        {% endfor %}
+    </ul>
+{% endblock %}

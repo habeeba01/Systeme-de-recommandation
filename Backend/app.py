@@ -1,21 +1,87 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request,render_template,redirect, url_for
 import os
-from PyPDF2 import PdfReader
+from PyPDF2 import PdfReader 
 import string
 import re
 import spacy
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from Models.skills import skills  # Importez vos compétences
-from BD.Connexion import client, db
+from BD.Connexion import db
 from Models.OffreEmploi import OffreEmploi
 import pandas as pd
+from Models.similarityOffre import SimilarityOffre
+from Models.User import User
+import bcrypt
 
-# Charger le modèle linguistique français de spaCy
+#######
+app = Flask(__name__,template_folder='../templates')
+
+########HOME###################
+@app.route('/')
+def home():
+    return render_template('index.html')
+
+###########COLLECTION############
+collection = db['user']
+######LOGIN############################
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error_message = None
+    if request.method == 'POST' or request.method == 'GET':
+        email = request.form.get('email')
+        password = request.form.get('password')
+
+        user = collection.find_one({'email': email})
+
+        if user and bcrypt.checkpw(password.encode('utf-8'), user['password']):
+            return redirect('index_cv')
+        else :
+             error_message = "Email ou mot de passe incorrect"
+
+    return render_template('index.html',error_message=error_message)
+
+
+
+########SIGNUP#########################
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
+    error_message = None
+    if request.method == 'POST':
+        nom = request.form.get('nom')
+        prenom = request.form.get('prenom')
+        email = request.form.get('email')
+        password = request.form.get('password')
+
+        existing_user = collection.find_one({'email': email})
+
+        if existing_user:
+            error_message = "Cet email existe deja"
+        else:
+
+            # Créez un nouvel utilisateur en fournissant tous les arguments nécessaires
+            new_user = User(nom, prenom, email, password)
+
+            # Hachez le mot de passe avant de le stocker
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+
+            # Enregistrez l'utilisateur dans la base de données
+            collection.insert_one({'nom': new_user.nom, 'prenom': new_user.prenom, 'email': new_user.email, 'password': hashed_password})
+
+            return redirect(url_for('index_cv'))
+    return render_template('index_inscrire.html', error_message=error_message)
+
+
+###############MAIN#################
+@app.route('/index_cv')
+def index_cv():
+    return render_template('index_cv.html')
+
+
+
+##############MODELE#########################
 nlp = spacy.load("fr_core_news_sm")
 tfidf_matrixCV = None
-
-app = Flask(__name__)
 
 # Définir une liste de stopwords personnalisée
 custom_stopwords = ["le", "la", "de", "des", "du", "et", "en", "pour", "avec", "je", "tu", "il", "elle", "nous", "vous", "ils", "elles"]
@@ -73,87 +139,93 @@ def lemmatize(text):
 
 # Créer un objet TfidfVectorizer avec sublinear_tf
 tfidf_vectorizer = TfidfVectorizer(sublinear_tf=True, stop_words=custom_stopwords)
+################
+def clean_and_preprocess(text):
+    # Supprimer la ponctuation
+    text = text.translate(str.maketrans('', '', string.punctuation))
 
-@app.route('/extract_clean_and_extract_skills', methods=['POST'])
-def extract_clean_and_extract_skills():
-    global tfidf_matrixCV
-    
-    if 'cv_file' not in request.files:
-        return jsonify({"error": "No file part"})
+    # Mettre en minuscules
+    text = text.lower()
 
-    cv_file = request.files['cv_file']
+    # Supprimer les numéros de téléphone (10 chiffres ou plus)
+    text = re.sub(r'\d{10,}', '', text)
 
-    if cv_file.filename == '':
-        return jsonify({"error": "No selected file"})
+    # Supprimer les adresses e-mail
+    text = re.sub(r'\S+@\S+', '', text)
 
-    # Lire le contenu du CV
-    cv_texte = ""
-    with cv_file as file:
-        pdf_reader = PdfReader(file)
-        for page in pdf_reader.pages:
-            cv_texte += page.extract_text()
+    # Supprimer les stopwords personnalisés
+    custom_stopwords = ["le", "la", "de", "des", "du", "et", "en", "pour", "avec", "je", "tu", "il", "elle", "nous", "vous", "ils", "elles"]
+    words = text.split()
+    words = [word for word in words if word not in custom_stopwords]
 
-    # Appliquez la fonction de nettoyage et d'extraction de compétences sur le CV de l'utilisateur
-    cleaned_cv = nettoyer_texte(cv_texte)
-    
-    # Effectuer la vectorisation TF-IDF sur le CV de l'utilisateur
-    tfidf_matrixCV = tfidf_vectorizer.transform([cleaned_cv])
-    
-    return jsonify({"message": "CV processed successfully"})
+    # Réassembler les mots nettoyés en une seule chaîne
+    cleaned_text = ' '.join(words)
 
+    return cleaned_text
+################
+@app.route('/process_uploaded_cv', methods=['GET', 'POST'])
+def process_uploaded_cv():
+    if 'pdfFile' not in request.files:
+        return "Aucun fichier CV n'a été téléchargé."
 
-@app.route('/vectorize_offres', methods=['GET'])
-def vectorize_offres():
-    global tfidf_matrixCV
-    if tfidf_matrixCV is None:
-        return jsonify({"error": "No CV data available. Please process a CV first."})
+    uploaded_cv = request.files['pdfFile']
 
-    data = []  # Créez une liste pour stocker les données
+    if uploaded_cv.filename == '':
+        return "Le nom du fichier est vide."
+
+    cv_text = ""
+
+    if uploaded_cv:
+        pdf_reader = PdfReader(uploaded_cv)
+        if pdf_reader:
+            for page in pdf_reader.pages:
+                cv_text += page.extract_text()
+
+    # Clean and preprocess the CV text
+    cleaned_cv = clean_and_preprocess(cv_text)
+
+    # Fit the TF-IDF vectorizer to the skills
+    tfidf_vectorizer.fit(skills)
+
+    # Transform the user's CV with the fitted vectorizer
+    tfidf_vector_for_user_cv = tfidf_vectorizer.transform([cleaned_cv])
+
+    data = []
+
     collection = db["offres_emploi"]
-
-    # Récupération de toutes les offres
     cursor = collection.find({})
 
-    # Création d'objets OffreEmploi à partir des données de MongoDB
     for document in cursor:
         name = document['name']
         combined_text = document['combined_text']
         lien = document['lien']
         offre = OffreEmploi(name, combined_text, lien)
 
-        # Ajoutez chaque offre à la liste "data"
-        data.append({
-            'name': offre.name,
-            'combined_text': offre.combined_text,
-            'lien': offre.lien
-        })
+        # Clean and preprocess the combined text of the job offer
+        cleaned_offer_text = clean_and_preprocess(offre.combined_text)
 
-    df = pd.DataFrame(data)
+        # Transform the offer text with the fitted vectorizer
+        tfidf_vector_for_offer = tfidf_vectorizer.transform([cleaned_offer_text])
 
-    # Effectuer la vectorisation TF-IDF sur les compétences des offres
-    comp = df['combined_text'].apply(lambda x: mots_communs(x, skills))
-    tfidf_matrixOffre = tfidf_vectorizer.transform(comp)  # Utilisez transform ici, pas fit_transform
-    feature_names = tfidf_vectorizer.get_feature_names_out()
+        # Calculate the similarity between the user's CV and the job offer
+        similarity_score = cosine_similarity(tfidf_vector_for_user_cv, tfidf_vector_for_offer)
 
-    # Calculer la similarité entre le CV de l'utilisateur et toutes les offres
-    similarity_scores = cosine_similarity(tfidf_matrixCV, tfidf_matrixOffre)
+        similarity_offre = SimilarityOffre(lien, similarity_score[0][0])
 
-    recommendations = []
+        data.append(similarity_offre)
 
-    sorted_scores = sorted(enumerate(similarity_scores[0]), key=lambda x: x[1], reverse=True)
-    cv_recommendations = []
-    for idx, score in sorted_scores:
-        cv_recommendations.append({
-            'offre_index': idx,
-            'lien_offre': data[idx]['lien'],
-            'similarity_score': score
-        })
-    recommendations.append({
-        'cv_index': 0,
-        'recommendations': cv_recommendations
-    })
+    data.sort(key=lambda x: x.similarity, reverse=True)
 
-    return jsonify(recommendations)
+    recommendations = [{
+        'lienOffre': offre.lien,
+        'similarity': offre.similarity
+    } for offre in data]
+
+    cv_recommendations = {
+        'recommendations': recommendations
+    }
+
+    return render_template('offre.html', recommendations=recommendations)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True,port=5003)
