@@ -8,9 +8,12 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from Models.skills import skills  # Importez vos compétences
 from BD.Connexion import client, db
-from Models.OffreEmploi import OffreEmploi
+from Models.offres_emploi_train import OffreEmploiTrain
 import pandas as pd
 from Models.similarityOffre import SimilarityOffre
+from sklearn.model_selection import train_test_split
+
+
 # Charger le modèle linguistique français de spaCy
 nlp = spacy.load("fr_core_news_sm")
 tfidf_matrixCV = None
@@ -133,7 +136,7 @@ def vectorize_offres():
     data = []  # Créez une liste pour stocker les données
     
 
-    collection = db["offres_emploi"]
+    collection = db["offres_emploi_train"]
 
     # Récupération de toutes les offres
     cursor = collection.find({})
@@ -143,7 +146,7 @@ def vectorize_offres():
         name = document['name']
         combined_text = document['combined_text']
         lien = document['lien']
-        offre = OffreEmploi(name, combined_text, lien)
+        offre = OffreEmploiTrain(name, combined_text, lien)
 
         # Effectuer la vectorisation TF-IDF sur les compétences des offres
         comp = mots_communs(offre.combined_text, skills)
@@ -188,5 +191,7 @@ def vectorize_offres():
     return jsonify(cv_recommendations)
 
 
+
 if __name__ == '__main__':
     app.run(debug=True, port=5009)
+
